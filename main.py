@@ -16,10 +16,10 @@ clock = pygame.time.Clock()
 class Car:
     def __init__(self, x, y):
         #Just plain old constants
-        self.max_speed = 400
-        self.accel = 5
+        self.max_speed = 200
+        self.accel = 3
         self.brake = 25
-        self.friction = 10
+        self.friction = 3
         self.turn_rate = 0.1
         self.x = x
         self.speed = 0
