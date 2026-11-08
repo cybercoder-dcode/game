@@ -17,7 +17,7 @@ class Car:
     def __init__(self, x, y):
         #Just plain old constants
         self.max_speed = 400
-        self.accel = 20
+        self.accel = 5
         self.brake = 25
         self.friction = 10
         self.turn_rate = 0.1
@@ -40,17 +40,18 @@ class Car:
 
     def move(self, keys, dt):
         #simple movement script
+        if not keys[pygame.K_w] and not keys[pygame.K_s]:
+            if self.speed > 0:
+                self.speed = max(0, self.speed - self.friction)
+            elif self.speed < 0:
+                self.speed = min(0, self.speed + self.friction)
+
         if keys[pygame.K_w]:
-            self.speed += self.accel
+            self.speed += self.accel 
         if keys[pygame.K_s]:
-            self.speed -= self.brake
+            self.speed -= self.brake 
 
         self.speed = max(-self.max_speed/2, min(self.speed, self.max_speed))
-
-        if self.speed > 0:
-            self.speed = max(0, self.speed - self.friction)
-        elif self.speed < 0:
-            self.speed = min(0, self.speed + self.friction)
 
         if abs(self.speed) > 0.1:
             turn = 0
@@ -62,6 +63,9 @@ class Car:
 
         self.x += math.cos(self.angle) * self.speed *dt
         self.y += math.sin(self.angle) * self.speed *dt 
+
+font = pygame.font.SysFont(None, 24) #For looking at speed
+
 car = Car(40,20)
 
 while True:
@@ -75,4 +79,6 @@ while True:
     car.move(keys, dt)              # update first
     screen.fill(WHITE)
     car.draw(screen)                # then draw
+    speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
+    screen.blit(speed_text, (10, 10))
     pygame.display.flip()
