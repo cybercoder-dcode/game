@@ -301,11 +301,7 @@ while True:
 
     cam_x, cam_y = get_camera_offset(car.x, car.y)
     screen.fill(WHITE)
-    pygame.draw.circle(
-        screen, (0, 0, 255),
-        world_to_screen(points[next_waypoint_index], cam_x, cam_y),
-        int(WAYPOINT_RADIUS * ZOOM)
-    )    
+
     # Convert the track points to camera coordinates
     screen_points = [world_to_screen(point, cam_x, cam_y) for point in smooth_points]
 
@@ -316,6 +312,11 @@ while True:
     for point in screen_points:
         pygame.draw.circle(screen, TRACK_COLOR, point, int(TRACK_RADIUS * ZOOM))
 
+    pygame.draw.circle(
+        screen, (0, 0, 255),
+        world_to_screen(points[next_waypoint_index], cam_x, cam_y),
+        int(10 * ZOOM)
+    )    
     # Draw initialization checkpoint
     checkpoint_x = math.cos(checkpoint_angle) * TRACK_RADIUS
     checkpoint_y = math.sin(checkpoint_angle) * TRACK_RADIUS
