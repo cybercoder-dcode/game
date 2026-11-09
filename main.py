@@ -6,10 +6,14 @@ import random
 pygame.init()
 
 # vars
-TRACK_WIDTH = 80
+TRACK_WIDTH = 120
 TRACK_RADIUS = TRACK_WIDTH // 2
 TRACK_COLOR = (100, 100, 100)
 CHECKPOINT_COLOR = (255, 220, 0)
+next_waypoint_index = 1   
+laps_completed = 0
+WAYPOINT_RADIUS = TRACK_RADIUS  
+current_speed = 0
 
 WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
 ZOOM = 1.5
@@ -45,9 +49,9 @@ def world_to_screen(point, cam_x, cam_y):
 class Car:
     def __init__(self, x, y):
         # Just plain old constants
-        self.max_speed = 300
-        self.accel = 6
-        self.brake = 10
+        self.max_speed = 500
+        self.accel = 3
+        self.brake = 4
         self.friction = 4
         self.turn_rate = 0.1
         self.x = x
@@ -56,6 +60,9 @@ class Car:
         self.angle = 0
         self.width = 40
         self.height = 20
+        self.vx = 0
+        self.vy = 0
+        self.grip = 0.08
 
     def get_corners(self, x=None, y=None):
         if x is None:
@@ -103,32 +110,57 @@ class Car:
 
     def move(self, keys, dt):
         # simple movement script
-        if not keys[pygame.K_w] and not keys[pygame.K_s]:
-            if self.speed > 0:
-                self.speed = max(0, self.speed - self.friction)
-            elif self.speed < 0:
-                self.speed = min(0, self.speed + self.friction)
+        turn = 0
+        if keys[pygame.K_a]:
+            turn -= 1
+        if keys[pygame.K_d]:
+            turn += 1
+        current_speed = math.hypot(self.vx, self.vy)
+        if abs(current_speed) > 0.1:
+                    self.angle += turn * self.turn_rate * (abs(current_speed) / self.max_speed)  # radians
+
+        forward_x = math.cos(self.angle)
+        forward_y = math.sin(self.angle)
+
+        # We break into two components the angle and increase both by accel
+        # Vese toh not needed but makes rest simpler via 2 components and is essential for drifting
 
         if keys[pygame.K_w]:
-            self.speed += self.accel
+            self.vx += forward_x * self.accel
+            self.vy += forward_y * self.accel
         if keys[pygame.K_s]:
-            self.speed -= self.brake
+            self.vx -= forward_x * self.brake
+            self.vy -= forward_y * self.brake
+        #friction
+        if not keys[pygame.K_w] and not keys[pygame.K_s]:
+            self.vx *= 0.95
+            self.vy *= 0.95
+        # Scaling the speeds instead of simply clamping it
+        max_speed = self.max_speed
+        if current_speed > max_speed:
+            scale = max_speed / current_speed
+            self.vx *= scale
+            self.vy *= scale
+            current_speed = max_speed
 
-        self.speed = max(-self.max_speed / 2, min(self.speed, self.max_speed))
+        if current_speed > 150: #less grip at high speed
+            effective_grip = self.grip
+        else: 
+            effective_grip = self.grip * 0.4
 
-        if abs(self.speed) > 0.1:
-            turn = 0
-            if keys[pygame.K_a]:
-                turn -= 1
-            if keys[pygame.K_d]:
-                turn += 1
-            self.angle += turn * self.turn_rate * (abs(self.speed) / self.max_speed)  # radians
+        current_speed = math.hypot(self.vx, self.vy)
 
-        self.x += math.cos(self.angle) * self.speed * dt
-        self.y += math.sin(self.angle) * self.speed * dt
+        if abs(current_speed) > 0.1:
+            desired_vx = forward_x * current_speed
+            desired_vy = forward_y * current_speed
+            self.vx += (desired_vx - self.vx) * effective_grip
+            self.vy += (desired_vy - self.vy) * effective_grip
+
+        self.x += self.vx * dt
+        self.y += self.vy * dt
 
 
-font = pygame.font.SysFont(None, 24)  # For looking at speed
+font = pygame.font.SysFont(None, 24)  # For looking at speed + Progress
 
 
 def generate_points(center, radius_x, radius_y, number, variability):
@@ -254,11 +286,26 @@ while True:
     if not car_is_on_track(car, smooth_points):
         car.x = previous_x
         car.y = previous_y
-        car.speed = 0
+        car.vx = 0
+        car.vy = 0
+
+#For Waypoints
+    target = points[next_waypoint_index]
+
+    if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
+        next_waypoint_index += 1
+        if next_waypoint_index == len(points):
+            next_waypoint_index = 0
+            laps_completed += 1
+    
 
     cam_x, cam_y = get_camera_offset(car.x, car.y)
     screen.fill(WHITE)
-
+    pygame.draw.circle(
+        screen, (0, 0, 255),
+        world_to_screen(points[next_waypoint_index], cam_x, cam_y),
+        int(WAYPOINT_RADIUS * ZOOM)
+    )    
     # Convert the track points to camera coordinates
     screen_points = [world_to_screen(point, cam_x, cam_y) for point in smooth_points]
 
@@ -283,6 +330,9 @@ while True:
         max(2, int(5 * ZOOM))
     )
     car.draw(screen, cam_x, cam_y)
-    speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
+    progress = laps_completed * len(points) + next_waypoint_index
+    speed_text = font.render(f"Speed: {current_speed:.1f}", True, (0, 0, 0))
+    progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
     screen.blit(speed_text, (10, 10))
+    screen.blit(progress_text, (10, 30))
     pygame.display.flip()
