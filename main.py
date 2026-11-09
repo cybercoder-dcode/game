@@ -62,7 +62,7 @@ class Car:
         self.height = 20
         self.vx = 0
         self.vy = 0
-        self.grip = 0.08
+        self.grip = 0.05
 
     def get_corners(self, x=None, y=None):
         if x is None:
