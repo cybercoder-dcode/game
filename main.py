@@ -8,17 +8,20 @@ pygame.init()
 '''
 So out code will output our ai code will have inputs being:
     7 raycasts at 0,180,90 and 30,60 both sides
-    Our velocity
-    angle
+    current speed
+    angle offset to angle to next waypoint
     distance to next waypoint
 
     Output will simply be left right up down
 
-    We will rank fitness by checkpoints reached in my average time with a bonus for high speed?
+    We will rank fitness by checkpoints reached in my average time with a bonus for high speed? + moving along the track
 
     so task 1 - modify to accept inputs from left right forward back
         Task 1 Done!
+    Task 2 form raycasts
+
     will use argmax in code so as to accept only 1 input
+    Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
 
 # vars
