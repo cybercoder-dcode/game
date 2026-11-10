@@ -5,6 +5,22 @@ import random
 
 pygame.init()
 
+'''
+So out code will output our ai code will have inputs being:
+    7 raycasts at 0,180,90 and 30,60 both sides
+    Our velocity
+    angle
+    distance to next waypoint
+
+    Output will simply be left right up down
+
+    We will rank fitness by checkpoints reached in my average time with a bonus for high speed?
+
+    so task 1 - modify to accept inputs from left right forward back
+        Task 1 Done!
+    will use argmax in code so as to accept only 1 input
+'''
+
 # vars
 TRACK_WIDTH = 120
 TRACK_RADIUS = TRACK_WIDTH // 2
@@ -17,6 +33,7 @@ current_speed = 0
 last_waypoint_index = 0   
 WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
 ZOOM = 1.5
+
 
 screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
 screen_width, screen_height = screen.get_size()
@@ -52,7 +69,7 @@ class Car:
         self.max_speed = 500
         self.accel = 3
         self.brake = 4
-        self.friction = 4
+        self.friction = 1
         self.turn_rate = 0.1
         self.x = x
         #self.speed = 0
@@ -110,13 +127,14 @@ class Car:
         )
         surface.blit(rotated, rect)
 
-    def move(self, keys, dt):
+    def move(self, move_state, dt):
         # simple movement script
         turn = 0
-        if keys[pygame.K_a]:
+        if move_state["left"]:
             turn -= 1
-        if keys[pygame.K_d]:
+        if move_state["right"]:
             turn += 1
+
         current_speed = math.hypot(self.vx, self.vy)
         if abs(current_speed) > 0.1:
                     self.angle += turn * self.turn_rate * (abs(current_speed) / self.max_speed)  # radians
@@ -127,14 +145,15 @@ class Car:
         # We break into two components the angle and increase both by accel
         # Vese toh not needed but makes rest simpler via 2 components and is essential for drifting
 
-        if keys[pygame.K_w]:
+        if move_state["accel"]:
             self.vx += forward_x * self.accel
             self.vy += forward_y * self.accel
-        if keys[pygame.K_s]:
+        if move_state["brake"]:
             self.vx -= forward_x * self.brake
             self.vy -= forward_y * self.brake
+
         #friction
-        if not keys[pygame.K_w] and not keys[pygame.K_s]:
+        if not move_state["accel"] and not move_state["brake"]:
             self.vx *= 0.95
             self.vy *= 0.95
         # Scaling the speeds instead of simply clamping it
@@ -310,6 +329,7 @@ while True:
                 pygame.quit()
                 sys.exit()
             if event.key == pygame.K_r:
+                
                 waypoint = points[last_waypoint_index]
                 towards = points[(last_waypoint_index+1) % len(points)]
 
@@ -319,6 +339,7 @@ while True:
 
                 next_waypoint_index = (last_waypoint_index + 1) % len(points)
             if event.key == pygame.K_RETURN:
+                
                 points = generate_points(
                     center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
                     radius_x=850,
@@ -346,12 +367,19 @@ while True:
 
                 next_waypoint_index = 1
                 laps_completed = 0
-
     dt = clock.tick(60) / 1000.0   # only once
     keys = pygame.key.get_pressed()
+    move_state = {
+        "left":  keys[pygame.K_a],
+        "right": keys[pygame.K_d],
+        "accel": keys[pygame.K_w],
+        "brake": keys[pygame.K_s],
+    }
+    
+    
     previous_x = car.x
     previous_y = car.y
-    car.move(keys, dt)              # update first
+    car.move(move_state, dt)              # update first
 
     # simple check
     if not car_is_on_track(car, smooth_points):
