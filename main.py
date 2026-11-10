@@ -19,6 +19,7 @@ So out code will output our ai code will have inputs being:
     so task 1 - modify to accept inputs from left right forward back
         Task 1 Done!
     Task 2 form raycasts
+        Task 2 Done!
 
     will use argmax in code so as to accept only 1 input
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
@@ -36,9 +37,11 @@ current_speed = 0
 last_waypoint_index = 0   
 WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
 ZOOM = 1.5
+RAY_ANGLES = [-90, -45, 0, 45, 90, 180]
+MAX_RAY_DIST = 400
+NEAR_WINDOW = 40  # how many centerline segments either side of the car's nearest point to check
 
-
-screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+screen = pygame.display.set_mode((720, 580))
 screen_width, screen_height = screen.get_size()
 view_width = int(screen_width / ZOOM)
 view_height = int(screen_height / ZOOM)
@@ -251,7 +254,7 @@ def distance_to_segment(point, segment_start, segment_end):
 
     if ab_length_squared == 0:
         return math.hypot(px - ax, py - ay)
-
+    #Oh shit this is just the distance formula ez
     projection = ((px - ax) * ab_x + (py - ay) * ab_y) / ab_length_squared
     projection = max(0, min(1, projection))
     closest_x = ax + projection * ab_x
@@ -259,25 +262,61 @@ def distance_to_segment(point, segment_start, segment_end):
     return math.hypot(px - closest_x, py - closest_y)
 
 
-def point_is_on_track(point, centerline):
-    for i in range(len(centerline)):
+def find_nearest_index(point, centerline):
+    px, py = point
+    best_i = 0 #More optimization as waypoints was causing this to slow down a lot
+    best_dist_sq = float("inf")
+    for i, (cx, cy) in enumerate(centerline):
+        dist_sq = (px - cx) ** 2 + (py - cy) ** 2
+        if dist_sq < best_dist_sq:
+            best_dist_sq = dist_sq 
+            best_i = i
+    return best_i
+
+
+def point_is_on_track(point, centerline, near_index=None, window=NEAR_WINDOW):
+    n = len(centerline)
+    if near_index is None:
+        indices = range(n)
+    else:
+        indices = [(near_index + offset) % n for offset in range(-window, window + 1)] #Simply sample
+
+    for i in indices:
         start = centerline[i]
-        end = centerline[(i + 1) % len(centerline)]
+        end = centerline[(i + 1) % n]
         distance = distance_to_segment(point, start, end)
         if distance <= TRACK_RADIUS:
             return True
     return False
 
 
-def car_is_on_track(car, centerline):
+def car_is_on_track(car, centerline, near_index=None):
     # Check the car's corners and centre
     test_points = car.get_corners()
     test_points.append((car.x, car.y))
     for point in test_points:
-        if not point_is_on_track(point, centerline):
+        if not point_is_on_track(point, centerline, near_index):
             return False
     return True
 
+def cast_ray(car, angle_offset_deg, centerline, near_index, max_dist=MAX_RAY_DIST, step=5):
+    angle = car.angle + math.radians(angle_offset_deg)
+    dx = math.cos(angle)
+    dy = math.sin(angle)
+    #throw the rays outward
+    dist = 0
+    while dist< max_dist:
+        test_x = car.x + dx*dist
+        test_y = car.y + dy*dist
+        if not point_is_on_track((test_x, test_y), centerline, near_index):
+            return dist
+        dist += step
+    return max_dist
+
+#Call ray_cats
+def get_raycast(car, centreline):
+    near_index = find_nearest_index((car.x, car.y), centreline)  # NEW: computed once, reused for all rays
+    return [cast_ray(car, a, centreline, near_index) / MAX_RAY_DIST for a in RAY_ANGLES]
 
 smooth_points = smooth_lines(points, samples=20)
 
@@ -384,8 +423,11 @@ while True:
     previous_y = car.y
     car.move(move_state, dt)              # update first
 
+    # NEW: find the car's nearest centerline index once per frame, reuse everywhere below
+    car_near_index = find_nearest_index((car.x, car.y), smooth_points)
+
     # simple check
-    if not car_is_on_track(car, smooth_points):
+    if not car_is_on_track(car, smooth_points, car_near_index):
         car.x = previous_x
         car.y = previous_y
         car.vx = 0
@@ -398,7 +440,8 @@ while True:
     if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
         last_waypoint_index = next_waypoint_index
         next_waypoint_index = (next_waypoint_index + 1) % len(points)
-        if next_waypoint_index == 1:
+
+        if next_waypoint_index == 0:
             laps_completed += 1
     
 
@@ -407,6 +450,8 @@ while True:
     car.draw(screen, cam_x, cam_y)
 
     progress = laps_completed * len(points) + next_waypoint_index
+    readings = get_raycast(car, smooth_points)
+    print(readings)
     speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
     progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
     screen.blit(speed_text, (10, 10))
