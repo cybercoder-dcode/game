@@ -286,8 +286,15 @@ while True:
                 car.vx = car.vy = 0
 
                 next_waypoint_index = (last_waypoint_index + 1) % len(points)
-                laps_completed = 0
+            if event.key == pygame.K_RETURN:
+                car.x, car.y = start_point
+                car.angle = start_angle
+                last_waypoint_index = 0
 
+                car.vx = car.vy = 0
+
+                next_waypoint_index = 1
+                laps_completed = 0
 
     dt = clock.tick(60) / 1000.0   # only once
     keys = pygame.key.get_pressed()
@@ -308,8 +315,8 @@ while True:
     if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
         last_waypoint_index = next_waypoint_index
         next_waypoint_index += 1
-        if next_waypoint_index == len(points):
-            next_waypoint_index = 0
+        next_waypoint_index = (next_waypoint_index + 1) % len(points)
+        if next_waypoint_index == 1:
             laps_completed += 1
     
 
