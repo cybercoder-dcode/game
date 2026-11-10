@@ -82,8 +82,8 @@ class Car:
             (-half_width, -half_height),
             (half_width, -half_height),
             (half_width, half_height),
-            (-half_width, half_height)
-        ]:
+            (-half_width, half_height)]:
+            
             world_x = x + local_x * cos_angle - local_y * sin_angle
             world_y = y + local_x * sin_angle + local_y * cos_angle
             corners.append((world_x, world_y))
@@ -268,59 +268,7 @@ car = Car(start_point[0], start_point[1])
 car.angle = start_angle
 checkpoint_angle = start_angle + math.pi / 2
 
-while True:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                pygame.quit()
-                sys.exit()
-            if event.key == pygame.K_r:
-                waypoint = points[last_waypoint_index]
-                towards = points[(last_waypoint_index+1) % len(points)]
-
-                car.x, car.y = waypoint
-                car.angle = math.atan2(towards[1] - waypoint[1], towards[0] - waypoint[0])
-                car.vx = car.vy = 0
-
-                next_waypoint_index = (last_waypoint_index + 1) % len(points)
-            if event.key == pygame.K_RETURN:
-                car.x, car.y = start_point
-                car.angle = start_angle
-                last_waypoint_index = 0
-
-                car.vx = car.vy = 0
-
-                next_waypoint_index = 1
-                laps_completed = 0
-
-    dt = clock.tick(60) / 1000.0   # only once
-    keys = pygame.key.get_pressed()
-    previous_x = car.x
-    previous_y = car.y
-    car.move(keys, dt)              # update first
-
-    # simple check
-    if not car_is_on_track(car, smooth_points):
-        car.x = previous_x
-        car.y = previous_y
-        car.vx = 0
-        car.vy = 0
-
-#For Waypoints
-    target = points[next_waypoint_index]
-
-    if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
-        last_waypoint_index = next_waypoint_index
-        next_waypoint_index += 1
-        next_waypoint_index = (next_waypoint_index + 1) % len(points)
-        if next_waypoint_index == 1:
-            laps_completed += 1
-    
-
-    cam_x, cam_y = get_camera_offset(car.x, car.y)
+def draw():
     screen.fill(WHITE)
 
     # Convert the track points to camera coordinates
@@ -351,7 +299,82 @@ while True:
         world_to_screen(checkpoint_end, cam_x, cam_y),
         max(2, int(5 * ZOOM))
     )
+
+while True:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                pygame.quit()
+                sys.exit()
+            if event.key == pygame.K_r:
+                waypoint = points[last_waypoint_index]
+                towards = points[(last_waypoint_index+1) % len(points)]
+
+                car.x, car.y = waypoint
+                car.angle = math.atan2(towards[1] - waypoint[1], towards[0] - waypoint[0])
+                car.vx = car.vy = 0
+
+                next_waypoint_index = (last_waypoint_index + 1) % len(points)
+            if event.key == pygame.K_RETURN:
+                points = generate_points(
+                    center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
+                    radius_x=850,
+                    radius_y=380,
+                    number=24,
+                    variability=35
+                )
+                cam_x, cam_y = get_camera_offset(car.x, car.y)
+                smooth_points = smooth_lines(points, samples=20)
+                start_point = points[0]
+                next_point = points[1]
+                start_angle = math.atan2(
+                    next_point[1] - start_point[1],
+                    next_point[0] - start_point[0]
+                )
+
+                car = Car(start_point[0], start_point[1])
+                car.angle = start_angle
+                checkpoint_angle = start_angle + math.pi / 2
+                car.x, car.y = start_point
+                car.angle = start_angle
+                last_waypoint_index = 0
+
+                car.vx = car.vy = 0
+
+                next_waypoint_index = 1
+                laps_completed = 0
+
+    dt = clock.tick(60) / 1000.0   # only once
+    keys = pygame.key.get_pressed()
+    previous_x = car.x
+    previous_y = car.y
+    car.move(keys, dt)              # update first
+
+    # simple check
+    if not car_is_on_track(car, smooth_points):
+        car.x = previous_x
+        car.y = previous_y
+        car.vx = 0
+        car.vy = 0
+
+#For Waypoints
+    
+    target = points[next_waypoint_index]
+
+    if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
+        last_waypoint_index = next_waypoint_index
+        next_waypoint_index = (next_waypoint_index + 1) % len(points)
+        if next_waypoint_index == 1:
+            laps_completed += 1
+    
+
+    cam_x, cam_y = get_camera_offset(car.x, car.y)
+    draw()  
     car.draw(screen, cam_x, cam_y)
+
     progress = laps_completed * len(points) + next_waypoint_index
     speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
     progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
