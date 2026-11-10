@@ -14,7 +14,7 @@ next_waypoint_index = 1
 laps_completed = 0
 WAYPOINT_RADIUS = TRACK_RADIUS  
 current_speed = 0
-
+last_waypoint_index = 0   
 WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
 ZOOM = 1.5
 
@@ -55,7 +55,7 @@ class Car:
         self.friction = 4
         self.turn_rate = 0.1
         self.x = x
-        self.speed = 0
+        #self.speed = 0
         self.y = y
         self.angle = 0
         self.width = 40
@@ -63,7 +63,9 @@ class Car:
         self.vx = 0
         self.vy = 0
         self.grip = 0.05
-
+    @property
+    def speed(self):
+        return math.hypot(self.vx, self.vy)
     def get_corners(self, x=None, y=None):
         if x is None:
             x = self.x
@@ -275,6 +277,17 @@ while True:
             if event.key == pygame.K_ESCAPE:
                 pygame.quit()
                 sys.exit()
+            if event.key == pygame.K_r:
+                waypoint = points[last_waypoint_index]
+                towards = points[(last_waypoint_index+1) % len(points)]
+
+                car.x, car.y = waypoint
+                car.angle = math.atan2(towards[1] - waypoint[1], towards[0] - waypoint[0])
+                car.vx = car.vy = 0
+
+                next_waypoint_index = (last_waypoint_index + 1) % len(points)
+                laps_completed = 0
+
 
     dt = clock.tick(60) / 1000.0   # only once
     keys = pygame.key.get_pressed()
@@ -293,6 +306,7 @@ while True:
     target = points[next_waypoint_index]
 
     if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
+        last_waypoint_index = next_waypoint_index
         next_waypoint_index += 1
         if next_waypoint_index == len(points):
             next_waypoint_index = 0
@@ -332,7 +346,7 @@ while True:
     )
     car.draw(screen, cam_x, cam_y)
     progress = laps_completed * len(points) + next_waypoint_index
-    speed_text = font.render(f"Speed: {current_speed:.1f}", True, (0, 0, 0))
+    speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
     progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
     screen.blit(speed_text, (10, 10))
     screen.blit(progress_text, (10, 30))
