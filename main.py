@@ -20,7 +20,9 @@ So out code will output our ai code will have inputs being:
         Task 1 Done!
     Task 2 form raycasts
         Task 2 Done!
-
+    Task 3 Record speed, current heading to next waypoint and distance to next waypoint
+        angle done, speed done, dist is just hypot
+        Task 3 Done!
     will use argmax in code so as to accept only 1 input
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
@@ -40,6 +42,7 @@ ZOOM = 1.5
 RAY_ANGLES = [-90, -45, 0, 45, 90, 180]
 MAX_RAY_DIST = 400
 NEAR_WINDOW = 40  # how many centerline segments either side of the car's nearest point to check
+car_near_index = 0
 
 screen = pygame.display.set_mode((720, 580))
 screen_width, screen_height = screen.get_size()
@@ -314,8 +317,8 @@ def cast_ray(car, angle_offset_deg, centerline, near_index, max_dist=MAX_RAY_DIS
     return max_dist
 
 #Call ray_cats
-def get_raycast(car, centreline):
-    near_index = find_nearest_index((car.x, car.y), centreline)  # NEW: computed once, reused for all rays
+def get_raycast(car, centreline, near_index):
+    #near_index = find_nearest_index((car.x, car.y), centreline)  # NEW: computed once, reused for all rays
     return [cast_ray(car, a, centreline, near_index) / MAX_RAY_DIST for a in RAY_ANGLES]
 
 smooth_points = smooth_lines(points, samples=20)
@@ -360,6 +363,25 @@ def draw():
         world_to_screen(checkpoint_end, cam_x, cam_y),
         max(2, int(5 * ZOOM))
     )
+
+def ai_values(near_index):
+    readings = get_raycast(car, smooth_points, near_index)
+    #print(readings)
+
+    # 
+    x_var = car.x
+    y_var = car.y
+    angle = math.atan2(target[1] - y_var, target[0] - x_var) - car.angle
+    angle = (angle + math.pi) % (2 * math.pi) - math.pi #Wrapping it to range of -pi to pi
+    angle = angle/math.pi
+    angle = round(angle,2)
+    #print(angle)
+    #
+    speed = round(round(car.speed)/(car.max_speed +3),3)
+    #print(speed)
+    dist = round(math.hypot(target[0]-car.x, target[1]-car.y)/250,3)
+    dist = max(0,min(dist,1))
+    print(dist)
 
 while True:
     for event in pygame.event.get():
@@ -450,8 +472,7 @@ while True:
     car.draw(screen, cam_x, cam_y)
 
     progress = laps_completed * len(points) + next_waypoint_index
-    readings = get_raycast(car, smooth_points)
-    print(readings)
+    ai_values(car_near_index)
     speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
     progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
     screen.blit(speed_text, (10, 10))
