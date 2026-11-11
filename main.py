@@ -23,6 +23,7 @@ So out code will output our ai code will have inputs being:
     Task 3 Record speed, current heading to next waypoint and distance to next waypoint
         angle done, speed done, dist is just hypot
         Task 3 Done!
+    Task 4 implement Fitness
     will use argmax in code so as to accept only 1 input
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
@@ -43,6 +44,12 @@ RAY_ANGLES = [-90, -45, 0, 45, 90, 180]
 MAX_RAY_DIST = 400
 NEAR_WINDOW = 40  # how many centerline segments either side of the car's nearest point to check
 car_near_index = 0
+net_speed = 0
+frame_count = 0
+frame_since_waypoint = 0
+STALL = 400
+episode_fitness = None
+can_move =True
 
 screen = pygame.display.set_mode((720, 580))
 screen_width, screen_height = screen.get_size()
@@ -138,56 +145,57 @@ class Car:
 
     def move(self, move_state, dt):
         # simple movement script
-        turn = 0
-        if move_state["left"]:
-            turn -= 1
-        if move_state["right"]:
-            turn += 1
+        if can_move == True:
+            turn = 0
+            if move_state["left"]:
+                turn -= 1
+            if move_state["right"]:
+                turn += 1
 
-        current_speed = math.hypot(self.vx, self.vy)
-        if abs(current_speed) > 0.1:
-                    self.angle += turn * self.turn_rate * (abs(current_speed) / self.max_speed)  # radians
+            current_speed = math.hypot(self.vx, self.vy)
+            if abs(current_speed) > 0.1:
+                        self.angle += turn * self.turn_rate * (abs(current_speed) / self.max_speed)  # radians
 
-        forward_x = math.cos(self.angle)
-        forward_y = math.sin(self.angle)
+            forward_x = math.cos(self.angle)
+            forward_y = math.sin(self.angle)
 
-        # We break into two components the angle and increase both by accel
-        # Vese toh not needed but makes rest simpler via 2 components and is essential for drifting
+            # We break into two components the angle and increase both by accel
+            # Vese toh not needed but makes rest simpler via 2 components and is essential for drifting
 
-        if move_state["accel"]:
-            self.vx += forward_x * self.accel
-            self.vy += forward_y * self.accel
-        if move_state["brake"]:
-            self.vx -= forward_x * self.brake
-            self.vy -= forward_y * self.brake
+            if move_state["accel"]:
+                self.vx += forward_x * self.accel
+                self.vy += forward_y * self.accel
+            if move_state["brake"]:
+                self.vx -= forward_x * self.brake
+                self.vy -= forward_y * self.brake
 
-        #friction
-        if not move_state["accel"] and not move_state["brake"]:
-            self.vx *= 0.95
-            self.vy *= 0.95
-        # Scaling the speeds instead of simply clamping it
-        max_speed = self.max_speed
-        if current_speed > max_speed:
-            scale = max_speed / current_speed
-            self.vx *= scale
-            self.vy *= scale
-            current_speed = max_speed
+            #friction
+            if not move_state["accel"] and not move_state["brake"]:
+                self.vx *= 0.95
+                self.vy *= 0.95
+            # Scaling the speeds instead of simply clamping it
+            max_speed = self.max_speed
+            if current_speed > max_speed:
+                scale = max_speed / current_speed
+                self.vx *= scale
+                self.vy *= scale
+                current_speed = max_speed
 
-        if current_speed > 150: #less grip at high speed
-            effective_grip = self.grip
-        else: 
-            effective_grip = self.grip * 0.4
+            if current_speed > 150: #less grip at high speed
+                effective_grip = self.grip
+            else: 
+                effective_grip = self.grip * 0.4
 
-        current_speed = math.hypot(self.vx, self.vy)
+            current_speed = math.hypot(self.vx, self.vy)
 
-        if abs(current_speed) > 0.1:
-            desired_vx = forward_x * current_speed
-            desired_vy = forward_y * current_speed
-            self.vx += (desired_vx - self.vx) * effective_grip
-            self.vy += (desired_vy - self.vy) * effective_grip
+            if abs(current_speed) > 0.1:
+                desired_vx = forward_x * current_speed
+                desired_vy = forward_y * current_speed
+                self.vx += (desired_vx - self.vx) * effective_grip
+                self.vy += (desired_vy - self.vy) * effective_grip
 
-        self.x += self.vx * dt
-        self.y += self.vy * dt
+            self.x += self.vx * dt
+            self.y += self.vy * dt
 
 
 font = pygame.font.SysFont(None, 24)  # For looking at speed + Progress
@@ -381,7 +389,7 @@ def ai_values(near_index):
     #print(speed)
     dist = round(math.hypot(target[0]-car.x, target[1]-car.y)/250,3)
     dist = max(0,min(dist,1))
-    print(dist)
+    #print(dist)
 
 while True:
     for event in pygame.event.get():
@@ -393,7 +401,8 @@ while True:
                 pygame.quit()
                 sys.exit()
             if event.key == pygame.K_r:
-                
+                can_move = True
+                crashed = False
                 waypoint = points[last_waypoint_index]
                 towards = points[(last_waypoint_index+1) % len(points)]
 
@@ -403,7 +412,8 @@ while True:
 
                 next_waypoint_index = (last_waypoint_index + 1) % len(points)
             if event.key == pygame.K_RETURN:
-                
+                can_move = True
+                crashed = False
                 points = generate_points(
                     center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
                     radius_x=850,
@@ -444,14 +454,17 @@ while True:
     previous_x = car.x
     previous_y = car.y
     car.move(move_state, dt)              # update first
+    net_speed += car.speed
+    frame_count += 1
+    frame_since_waypoint += 1
 
     # NEW: find the car's nearest centerline index once per frame, reuse everywhere below
     car_near_index = find_nearest_index((car.x, car.y), smooth_points)
 
     # simple check
     if not car_is_on_track(car, smooth_points, car_near_index):
-        car.x = previous_x
-        car.y = previous_y
+        crashed = True
+        can_move = False
         car.vx = 0
         car.vy = 0
 
@@ -462,6 +475,7 @@ while True:
     if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
         last_waypoint_index = next_waypoint_index
         next_waypoint_index = (next_waypoint_index + 1) % len(points)
+        frame_since_waypoint = 0
 
         if next_waypoint_index == 0:
             laps_completed += 1
@@ -470,6 +484,14 @@ while True:
     cam_x, cam_y = get_camera_offset(car.x, car.y)
     draw()  
     car.draw(screen, cam_x, cam_y)
+
+    crashed = not car_is_on_track(car, smooth_points, car_near_index)
+    stalled = frame_since_waypoint >= STALL
+    if crashed or stalled:
+        progress = laps_completed * len(points) + next_waypoint_index
+        avg_speed_normalized = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
+        episode_fitness = progress + avg_speed_normalized * 0.5   #f
+        print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
 
     progress = laps_completed * len(points) + next_waypoint_index
     ai_values(car_near_index)
