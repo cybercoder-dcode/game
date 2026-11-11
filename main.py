@@ -24,6 +24,7 @@ So out code will output our ai code will have inputs being:
         angle done, speed done, dist is just hypot
         Task 3 Done!
     Task 4 implement Fitness
+        Done!
     will use argmax in code so as to accept only 1 input
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
@@ -50,6 +51,8 @@ frame_since_waypoint = 0
 STALL = 400
 episode_fitness = None
 can_move =True
+episode_over = False
+crashed = False
 
 screen = pygame.display.set_mode((720, 580))
 screen_width, screen_height = screen.get_size()
@@ -391,6 +394,24 @@ def ai_values(near_index):
     dist = max(0,min(dist,1))
     #print(dist)
 
+def reset_episode():
+    global car, can_move, crashed, episode_over, next_waypoint_index
+    global last_waypoint_index, laps_completed, net_speed, frame_count
+    global frame_since_waypoint, episode_fitness
+
+    car = Car(start_point[0], start_point[1])
+    car.angle = start_angle
+    can_move = True
+    crashed = False
+    episode_over = False
+    next_waypoint_index = 1
+    last_waypoint_index = 0
+    laps_completed = 0
+    net_speed = 0
+    frame_count = 0
+    frame_since_waypoint = 0
+    episode_fitness = None
+
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -401,8 +422,13 @@ while True:
                 pygame.quit()
                 sys.exit()
             if event.key == pygame.K_r:
+                episode_over = False
                 can_move = True
                 crashed = False
+                net_speed = 0
+                frame_count = 0
+                frame_since_waypoint = 0
+                episode_fitness = None
                 waypoint = points[last_waypoint_index]
                 towards = points[(last_waypoint_index+1) % len(points)]
 
@@ -412,6 +438,7 @@ while True:
 
                 next_waypoint_index = (last_waypoint_index + 1) % len(points)
             if event.key == pygame.K_RETURN:
+                episode_over = False
                 can_move = True
                 crashed = False
                 points = generate_points(
@@ -429,18 +456,8 @@ while True:
                     next_point[1] - start_point[1],
                     next_point[0] - start_point[0]
                 )
+                reset_episode()
 
-                car = Car(start_point[0], start_point[1])
-                car.angle = start_angle
-                checkpoint_angle = start_angle + math.pi / 2
-                car.x, car.y = start_point
-                car.angle = start_angle
-                last_waypoint_index = 0
-
-                car.vx = car.vy = 0
-
-                next_waypoint_index = 1
-                laps_completed = 0
     dt = clock.tick(60) / 1000.0   # only once
     keys = pygame.key.get_pressed()
     move_state = {
@@ -485,13 +502,15 @@ while True:
     draw()  
     car.draw(screen, cam_x, cam_y)
 
-    crashed = not car_is_on_track(car, smooth_points, car_near_index)
+    #crashed = not car_is_on_track(car, smooth_points, car_near_index)
     stalled = frame_since_waypoint >= STALL
     if crashed or stalled:
-        progress = laps_completed * len(points) + next_waypoint_index
-        avg_speed_normalized = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
-        episode_fitness = progress + avg_speed_normalized * 0.5   #f
-        print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
+        if not episode_over:
+            episode_over = True
+            progress = laps_completed * len(points) + next_waypoint_index
+            avg_speed_normalized = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
+            episode_fitness = progress + avg_speed_normalized * 0.5   #f
+            print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
 
     progress = laps_completed * len(points) + next_waypoint_index
     ai_values(car_near_index)
