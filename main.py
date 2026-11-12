@@ -2,13 +2,17 @@ import pygame
 import sys
 import math
 import random
+import pickle         
+import argparse        
 import neat
 from neat.nn import FeedForwardNetwork
+
+random.seed(19)        
 
 pygame.init()
 
 '''
-So out code will output our ai code will have inputs being:
+ So out code will output our ai code will have inputs being:
     7 raycasts at 0,180,90 and 30,60 both sides
     current speed
     angle offset to angle to next waypoint
@@ -28,22 +32,27 @@ So out code will output our ai code will have inputs being:
     Task 4 implement Fitness
         Done!
     Task 5 Implement Neat + On crash reset
+          Yes SUCCESSFULLY TRAINED 99% of thw way there!!
 
     Neat eveolves both the weights and the structure ie layers etc so is perfect for something so random
+
     will use argmax in code so as to accept only 1 input
+
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
 
 # vars
-TRACK_WIDTH = 120
+TRACK_WIDTH = 130
 TRACK_RADIUS = TRACK_WIDTH // 2
 TRACK_COLOR = (100, 100, 100)
 CHECKPOINT_COLOR = (255, 220, 0)
-next_waypoint_index = 1   
+next_waypoint_index = 1
 laps_completed = 0
-WAYPOINT_RADIUS = TRACK_RADIUS  
+WAYPOINT_RADIUS = TRACK_RADIUS
+
 current_speed = 0
-last_waypoint_index = 0   
+last_waypoint_index = 0
+
 WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
 ZOOM = 1.5
 RAY_ANGLES = [-90, -45, 0, 45, 90, 180]
@@ -55,12 +64,12 @@ frame_count = 0
 frame_since_waypoint = 0
 STALL = 200
 episode_fitness = None
-can_move =True
+can_move = True
 episode_over = False
 crashed = False
-MAX_FRAMES = 6000
-RENDER = True   # True = watch cars, False = fast headless
-DEBUG = True    # live terminal telemetry (pos/speed/waypoint)
+MAX_FRAMES = 12000     
+RENDER = False
+DEBUG = False          
 DEBUG_EVERY = 30  # print every N frames
 
 screen = pygame.display.set_mode((720, 580))
@@ -74,7 +83,6 @@ WHITE = (255, 255, 255)
 RED = (255, 0, 0)
 clock = pygame.time.Clock()
 
-
 # Cam
 def get_camera_offset(target_x, target_y):
     cam_x = target_x - view_width // 2
@@ -84,11 +92,9 @@ def get_camera_offset(target_x, target_y):
     cam_y = max(0, min(cam_y, WORLD_HEIGHT - view_height))
     return cam_x, cam_y
 
-
 def world_to_screen(point, cam_x, cam_y):
     x, y = point
     return (int((x - cam_x) * ZOOM), int((y - cam_y) * ZOOM))
-
 
 # Car Class
 class Car:
@@ -107,10 +113,12 @@ class Car:
         self.height = 20
         self.vx = 0
         self.vy = 0
-        self.grip = 0.05
+        self.grip = 0.07
+
     @property
     def speed(self):
         return math.hypot(self.vx, self.vy)
+
     def get_corners(self, x=None, y=None):
         if x is None:
             x = self.x
@@ -128,7 +136,7 @@ class Car:
             (half_width, -half_height),
             (half_width, half_height),
             (-half_width, half_height)]:
-            
+
             world_x = x + local_x * cos_angle - local_y * sin_angle
             world_y = y + local_x * sin_angle + local_y * cos_angle
             corners.append((world_x, world_y))
@@ -166,7 +174,7 @@ class Car:
 
             current_speed = math.hypot(self.vx, self.vy)
             if abs(current_speed) > 0.1:
-                        self.angle += turn * self.turn_rate * (abs(current_speed) / self.max_speed)  # radians
+                self.angle += turn * self.turn_rate * (abs(current_speed) / self.max_speed)  # radians
 
             forward_x = math.cos(self.angle)
             forward_y = math.sin(self.angle)
@@ -185,6 +193,7 @@ class Car:
             if not move_state["accel"] and not move_state["brake"]:
                 self.vx *= 0.95
                 self.vy *= 0.95
+
             # Scaling the speeds instead of simply clamping it
             max_speed = self.max_speed
             if current_speed > max_speed:
@@ -195,7 +204,7 @@ class Car:
 
             if current_speed > 150: #less grip at high speed
                 effective_grip = self.grip
-            else: 
+            else:
                 effective_grip = self.grip * 0.4
 
             current_speed = math.hypot(self.vx, self.vy)
@@ -209,9 +218,7 @@ class Car:
             self.x += self.vx * dt
             self.y += self.vy * dt
 
-
 font = pygame.font.SysFont(None, 24)  # For looking at speed + Progress
-
 
 def generate_points(center, radius_x, radius_y, number, variability):
     cx, cy = center
@@ -228,7 +235,6 @@ def generate_points(center, radius_x, radius_y, number, variability):
         points.append((x, y))
     return points
 
-
 points = generate_points(
     center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
     radius_x=850,
@@ -236,7 +242,6 @@ points = generate_points(
     number=24,
     variability=35
 )
-
 
 def smooth_lines(points, samples=20):
     smooth = []
@@ -266,7 +271,6 @@ def smooth_lines(points, samples=20):
     return smooth
     # need some sort of interpolation -> Catmul something, Like beizer but for more points
 
-
 def distance_to_segment(point, segment_start, segment_end):
     px, py = point
     ax, ay = segment_start
@@ -284,7 +288,6 @@ def distance_to_segment(point, segment_start, segment_end):
     closest_y = ay + projection * ab_y
     return math.hypot(px - closest_x, py - closest_y)
 
-
 def find_nearest_index(point, centerline):
     px, py = point
     best_i = 0 #More optimization as waypoints was causing this to slow down a lot
@@ -292,10 +295,9 @@ def find_nearest_index(point, centerline):
     for i, (cx, cy) in enumerate(centerline):
         dist_sq = (px - cx) ** 2 + (py - cy) ** 2
         if dist_sq < best_dist_sq:
-            best_dist_sq = dist_sq 
+            best_dist_sq = dist_sq
             best_i = i
     return best_i
-
 
 def point_is_on_track(point, centerline, near_index=None, window=NEAR_WINDOW):
     n = len(centerline)
@@ -312,7 +314,6 @@ def point_is_on_track(point, centerline, near_index=None, window=NEAR_WINDOW):
             return True
     return False
 
-
 def car_is_on_track(car, centerline, near_index=None):
     # Check the car's corners and centre
     test_points = car.get_corners()
@@ -328,9 +329,9 @@ def cast_ray(car, angle_offset_deg, centerline, near_index, max_dist=MAX_RAY_DIS
     dy = math.sin(angle)
     #throw the rays outward
     dist = 0
-    while dist< max_dist:
-        test_x = car.x + dx*dist
-        test_y = car.y + dy*dist
+    while dist < max_dist:
+        test_x = car.x + dx * dist
+        test_y = car.y + dy * dist
         if not point_is_on_track((test_x, test_y), centerline, near_index):
             return dist
         dist += step
@@ -369,7 +370,8 @@ def draw():
         screen, (0, 0, 255),
         world_to_screen(points[next_waypoint_index], cam_x, cam_y),
         int(10 * ZOOM)
-    )    
+    )
+
     # Draw initialization checkpoint
     checkpoint_x = math.cos(checkpoint_angle) * TRACK_RADIUS
     checkpoint_y = math.sin(checkpoint_angle) * TRACK_RADIUS
@@ -386,22 +388,19 @@ def draw():
 
 def ai_values(near_index, targets):
     readings = get_raycast(car, smooth_points, near_index)
-    #print(readings)
 
-    # 
     x_var = car.x
     y_var = car.y
     angle = math.atan2(targets[1] - y_var, targets[0] - x_var) - car.angle
     angle = (angle + math.pi) % (2 * math.pi) - math.pi #Wrapping it to range of -pi to pi
-    angle = angle/math.pi
-    angle = round(angle,2)
-    #print(angle)
-    #
-    speed = round(round(car.speed)/(car.max_speed +3),3)
-    #print(speed)
-    dist = round(math.hypot(targets[0]-car.x, targets[1]-car.y)/250,3)
-    dist = max(0,min(dist,1))
-    #print(dist)
+    angle = angle / math.pi
+    angle = round(angle, 2)
+
+    speed = round(round(car.speed) / (car.max_speed + 3), 3)
+
+    dist = round(math.hypot(targets[0] - car.x, targets[1] - car.y) / 250, 3)
+    dist = max(0, min(dist, 1))
+
     readings.extend([angle, speed, dist])
     return readings
 
@@ -425,14 +424,15 @@ def reset_episode():
 
 def translator(neat_output):
     steer_choice = 0
-    for i in range (1,3):
+    for i in range(1, 3):
         if neat_output[i] > neat_output[steer_choice]:
             steer_choice = i
 
     throttle_choice = 3
-    for i in range (4,6):
+    for i in range(4, 6):
         if neat_output[i] > neat_output[throttle_choice]:
             throttle_choice = i
+
     move_state = {
         "left":  steer_choice == 0,
         "right": steer_choice == 2,
@@ -514,118 +514,179 @@ def eval_genomes(genomes, config):
     for genome_id, genome in genomes:
         genome.fitness = eval_one_genome(genome_id, genome, config)
 
-# ===== TRAIN (runs before the game loop) =====
-config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
-                     neat.DefaultSpeciesSet, neat.DefaultStagnation,
-                     "config-feedforward.txt")
-pop = neat.Population(config)
-pop.add_reporter(neat.StdOutReporter(True))
-pop.add_reporter(neat.StatisticsReporter())
-pop.run(eval_genomes, 10)          # 10 generations for the first test (bump to 30 later)
+class BestSaver(neat.reporting.BaseReporter):
+    """Saves the all-time best genome (plus the exact track it trained on) to
+    disk after every generation, so the champion survives crashes and reruns."""
+    def __init__(self, path="best_genome.pkl"):
+        self.path = path
+        self.best_fitness = -1e9
 
-while True:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
+    def post_evaluate(self, config, population, species, best_genome):
+        if best_genome.fitness > self.best_fitness:   # all-time best, not just this gen
+            self.best_fitness = best_genome.fitness
+            with open(self.path, "wb") as f:
+                pickle.dump({"genome": best_genome, "track": points}, f)
+            print(f"  [Saved new champion -> {self.path}  fitness={best_genome.fitness:.2f}]")
+
+def load_config():
+    return neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                       neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                       "config-feedforward.txt")
+
+def train():
+    config = load_config()
+    pop = neat.Population(config)
+    pop.add_reporter(neat.StdOutReporter(True))
+    pop.add_reporter(neat.StatisticsReporter())
+    pop.add_reporter(neat.Checkpointer(generation_interval=2, filename_prefix="neat-checkpoint-"))
+    pop.add_reporter(BestSaver("best_genome.pkl"))
+    pop.run(eval_genomes, 20)  
+
+def replay_champion(path="best_genome.pkl"):
+    global RENDER, DEBUG, points, smooth_points, start_point, next_point, start_angle
+
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+
+    if isinstance(data, dict):                      # new format
+        genome = data["genome"]
+        saved_track = data.get("track")
+    else:                                           # fallback: raw genome
+        genome = data
+        saved_track = None
+
+    if saved_track is not None:                     # replay on the SAME track it trained on
+        points = saved_track
+        smooth_points = smooth_lines(points, samples=20)
+        start_point = points[0]
+        next_point = points[1]
+        start_angle = math.atan2(next_point[1] - start_point[1],
+                                 next_point[0] - start_point[0])
+
+    RENDER = True
+    DEBUG = False
+    print(f"Replaying {path} | fitness={genome.fitness:.2f} | size={genome.size()} | ESC/close to exit")
+    fit = eval_one_genome(genome.key, genome, load_config())
+    print(f"Replay complete | fitness={fit:.2f}")
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="NEAT car racing")
+    ap.add_argument("--replay", nargs="?", const="best_genome.pkl", metavar="FILE",
+                    help="replay a saved champion with rendering (default: best_genome.pkl)")
+    ap.add_argument("--debug", action="store_true",
+                    help="print per-car telemetry during training (slow, noisy)")
+    args = ap.parse_args()
+
+    DEBUG = args.debug
+    RENDER = False
+
+    if args.replay:
+        replay_champion(args.replay)   # renders the champion, then exits
+
+    train()                           
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-            if event.key == pygame.K_r:
-                episode_over = False
-                can_move = True
-                crashed = False
-                net_speed = 0
-                frame_count = 0
-                frame_since_waypoint = 0
-                episode_fitness = None
-                waypoint = points[last_waypoint_index]
-                towards = points[(last_waypoint_index+1) % len(points)]
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit()
+                    sys.exit()
+                if event.key == pygame.K_r:
+                    episode_over = False
+                    can_move = True
+                    crashed = False
+                    net_speed = 0
+                    frame_count = 0
+                    frame_since_waypoint = 0
+                    episode_fitness = None
+                    waypoint = points[last_waypoint_index]
+                    towards = points[(last_waypoint_index+1) % len(points)]
 
-                car.x, car.y = waypoint
-                car.angle = math.atan2(towards[1] - waypoint[1], towards[0] - waypoint[0])
-                car.vx = car.vy = 0
+                    car.x, car.y = waypoint
+                    car.angle = math.atan2(towards[1] - waypoint[1], towards[0] - waypoint[0])
+                    car.vx = car.vy = 0
 
-                next_waypoint_index = (last_waypoint_index + 1) % len(points)
-            if event.key == pygame.K_RETURN:
-                episode_over = False
-                can_move = True
-                crashed = False
-                points = generate_points(
-                    center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
-                    radius_x=850,
-                    radius_y=380,
-                    number=24,
-                    variability=35
-                )
-                cam_x, cam_y = get_camera_offset(car.x, car.y)
-                smooth_points = smooth_lines(points, samples=20)
-                start_point = points[0]
-                next_point = points[1]
-                start_angle = math.atan2(
-                    next_point[1] - start_point[1],
-                    next_point[0] - start_point[0]
-                )
-                reset_episode()
+                    next_waypoint_index = (last_waypoint_index + 1) % len(points)
+                if event.key == pygame.K_RETURN:
+                    episode_over = False
+                    can_move = True
+                    crashed = False
+                    points = generate_points(
+                        center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
+                        radius_x=850,
+                        radius_y=380,
+                        number=24,
+                        variability=35
+                    )
+                    cam_x, cam_y = get_camera_offset(car.x, car.y)
+                    smooth_points = smooth_lines(points, samples=20)
+                    start_point = points[0]
+                    next_point = points[1]
+                    start_angle = math.atan2(
+                        next_point[1] - start_point[1],
+                        next_point[0] - start_point[0]
+                    )
+                    reset_episode()
 
-    dt = clock.tick(60) / 1000.0   # only once
-    keys = pygame.key.get_pressed()
-    move_state = {
-        "left":  keys[pygame.K_a],
-        "right": keys[pygame.K_d],
-        "accel": keys[pygame.K_w],
-        "brake": keys[pygame.K_s],
-    }
-    
-    
-    previous_x = car.x
-    previous_y = car.y
-    car.move(move_state, dt)              # update first
-    net_speed += car.speed
-    frame_count += 1
-    frame_since_waypoint += 1
+        dt = clock.tick(60) / 1000.0   # only once
+        keys = pygame.key.get_pressed()
+        move_state = {
+            "left":  keys[pygame.K_a],
+            "right": keys[pygame.K_d],
+            "accel": keys[pygame.K_w],
+            "brake": keys[pygame.K_s],
+        }
 
-    # NEW: find the car's nearest centerline index once per frame, reuse everywhere below
-    car_near_index = find_nearest_index((car.x, car.y), smooth_points)
+        previous_x = car.x
+        previous_y = car.y
+        car.move(move_state, dt)              # update first
 
-    # simple check
-    if not car_is_on_track(car, smooth_points, car_near_index):
-        crashed = True
-        can_move = False
-        car.vx = 0
-        car.vy = 0
+        net_speed += car.speed
+        frame_count += 1
+        frame_since_waypoint += 1
 
-#For Waypoints
-    
-    target = points[next_waypoint_index]
+        # NEW: find the car's nearest centerline index once per frame, reuse everywhere below
+        car_near_index = find_nearest_index((car.x, car.y), smooth_points)
 
-    if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
-        last_waypoint_index = next_waypoint_index
-        next_waypoint_index = (next_waypoint_index + 1) % len(points)
-        frame_since_waypoint = 0
+        # simple check
+        if not car_is_on_track(car, smooth_points, car_near_index):
+            crashed = True
+            can_move = False
+            car.vx = 0
+            car.vy = 0
 
-        if next_waypoint_index == 0:
-            laps_completed += 1
-    
+        #For Waypoints
+        target = points[next_waypoint_index]
+        if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
+            last_waypoint_index = next_waypoint_index
+            next_waypoint_index = (next_waypoint_index + 1) % len(points)
+            frame_since_waypoint = 0
 
-    cam_x, cam_y = get_camera_offset(car.x, car.y)
-    draw()  
-    car.draw(screen, cam_x, cam_y)
+            if next_waypoint_index == 0:
+                laps_completed += 1
 
-    #crashed = not car_is_on_track(car, smooth_points, car_near_index)
-    stalled = frame_since_waypoint >= STALL
-    if crashed or stalled:
-        if not episode_over:
-            episode_over = True
-            progress = laps_completed * len(points) + next_waypoint_index
-            avg_speed_normalized = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
-            episode_fitness = progress + avg_speed_normalized * 0.5   #f
-            print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
-    progress = laps_completed * len(points) + next_waypoint_index
-    aivals = ai_values(car_near_index, target)
-    speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
-    progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
-    screen.blit(speed_text, (10, 10))
-    screen.blit(progress_text, (10, 30))
-    pygame.display.flip()
+        cam_x, cam_y = get_camera_offset(car.x, car.y)
+        draw()
+        car.draw(screen, cam_x, cam_y)
+
+        #crashed = not car_is_on_track(car, smooth_points, car_near_index)
+        stalled = frame_since_waypoint >= STALL
+        if crashed or stalled:
+            if not episode_over:
+                episode_over = True
+                progress = laps_completed * len(points) + next_waypoint_index
+                avg_speed_normalized = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
+                episode_fitness = progress + avg_speed_normalized * 0.5   #f
+                print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
+
+        progress = laps_completed * len(points) + next_waypoint_index
+        aivals = ai_values(car_near_index, target)
+        speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
+        progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
+        screen.blit(speed_text, (10, 10))
+        screen.blit(progress_text, (10, 30))
+        pygame.display.flip()
