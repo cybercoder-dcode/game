@@ -442,7 +442,7 @@ def translator(neat_output):
     return move_state
 
 def eval_one_genome(genome_id, genome, config):
-    # FIXED: globals were missing — UnboundLocalError on first genome
+    
     global car_near_index, net_speed, frame_count, frame_since_waypoint
     global crashed, can_move, last_waypoint_index, next_waypoint_index
     global laps_completed, cam_x, cam_y
@@ -511,6 +511,20 @@ def eval_one_genome(genome_id, genome, config):
     return progress + avg_speed * 0.5
 
 def eval_genomes(genomes, config):
+    global points, smooth_points, start_point, next_point, start_angle
+    points = generate_points(
+        center=(WORLD_WIDTH // 2, WORLD_HEIGHT // 2),
+        radius_x=850,
+        radius_y=380,
+        number=24,
+        variability=35
+    )
+    smooth_points = smooth_lines(points, samples=20)
+    start_point = points[0]
+    next_point = points[1]
+    start_angle = math.atan2(next_point[1] - start_point[1],
+                             next_point[0] - start_point[0])
+
     for genome_id, genome in genomes:
         genome.fitness = eval_one_genome(genome_id, genome, config)
 
