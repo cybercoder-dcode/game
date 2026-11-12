@@ -2,6 +2,8 @@ import pygame
 import sys
 import math
 import random
+import neat
+from neat.nn import FeedForwardNetwork
 
 pygame.init()
 
@@ -25,6 +27,9 @@ So out code will output our ai code will have inputs being:
         Task 3 Done!
     Task 4 implement Fitness
         Done!
+    Task 5 Implement Neat + On crash reset
+
+    Neat eveolves both the weights and the structure ie layers etc so is perfect for something so random
     will use argmax in code so as to accept only 1 input
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
@@ -43,16 +48,20 @@ WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
 ZOOM = 1.5
 RAY_ANGLES = [-90, -45, 0, 45, 90, 180]
 MAX_RAY_DIST = 400
-NEAR_WINDOW = 40  # how many centerline segments either side of the car's nearest point to check
+NEAR_WINDOW = 20  # how many centerline segments either side of the car's nearest point to check
 car_near_index = 0
 net_speed = 0
 frame_count = 0
 frame_since_waypoint = 0
-STALL = 400
+STALL = 200
 episode_fitness = None
 can_move =True
 episode_over = False
 crashed = False
+MAX_FRAMES = 6000
+RENDER = True   # True = watch cars, False = fast headless
+DEBUG = True    # live terminal telemetry (pos/speed/waypoint)
+DEBUG_EVERY = 30  # print every N frames
 
 screen = pygame.display.set_mode((720, 580))
 screen_width, screen_height = screen.get_size()
@@ -313,7 +322,7 @@ def car_is_on_track(car, centerline, near_index=None):
             return False
     return True
 
-def cast_ray(car, angle_offset_deg, centerline, near_index, max_dist=MAX_RAY_DIST, step=5):
+def cast_ray(car, angle_offset_deg, centerline, near_index, max_dist=MAX_RAY_DIST, step=10):
     angle = car.angle + math.radians(angle_offset_deg)
     dx = math.cos(angle)
     dy = math.sin(angle)
@@ -375,14 +384,14 @@ def draw():
         max(2, int(5 * ZOOM))
     )
 
-def ai_values(near_index):
+def ai_values(near_index, targets):
     readings = get_raycast(car, smooth_points, near_index)
     #print(readings)
 
     # 
     x_var = car.x
     y_var = car.y
-    angle = math.atan2(target[1] - y_var, target[0] - x_var) - car.angle
+    angle = math.atan2(targets[1] - y_var, targets[0] - x_var) - car.angle
     angle = (angle + math.pi) % (2 * math.pi) - math.pi #Wrapping it to range of -pi to pi
     angle = angle/math.pi
     angle = round(angle,2)
@@ -390,9 +399,11 @@ def ai_values(near_index):
     #
     speed = round(round(car.speed)/(car.max_speed +3),3)
     #print(speed)
-    dist = round(math.hypot(target[0]-car.x, target[1]-car.y)/250,3)
+    dist = round(math.hypot(targets[0]-car.x, targets[1]-car.y)/250,3)
     dist = max(0,min(dist,1))
     #print(dist)
+    readings.extend([angle, speed, dist])
+    return readings
 
 def reset_episode():
     global car, can_move, crashed, episode_over, next_waypoint_index
@@ -411,6 +422,106 @@ def reset_episode():
     frame_count = 0
     frame_since_waypoint = 0
     episode_fitness = None
+
+def translator(neat_output):
+    steer_choice = 0
+    for i in range (1,3):
+        if neat_output[i] > neat_output[steer_choice]:
+            steer_choice = i
+
+    throttle_choice = 3
+    for i in range (4,6):
+        if neat_output[i] > neat_output[throttle_choice]:
+            throttle_choice = i
+    move_state = {
+        "left":  steer_choice == 0,
+        "right": steer_choice == 2,
+        "accel": throttle_choice == 3,   # FIXED: was == 0 (could never be true)
+        "brake": throttle_choice == 5,   # FIXED: was == 2 (could never be true)
+    }
+    return move_state
+
+def eval_one_genome(genome_id, genome, config):
+    # FIXED: globals were missing — UnboundLocalError on first genome
+    global car_near_index, net_speed, frame_count, frame_since_waypoint
+    global crashed, can_move, last_waypoint_index, next_waypoint_index
+    global laps_completed, cam_x, cam_y
+
+    net = FeedForwardNetwork.create(genome, config)
+
+    reset_episode()                                   # fresh car
+    dt = 1 / 60 #Max processing speed
+    frame = 0
+    if DEBUG:
+        print(f"= car #{genome_id} start =")
+
+    while True:
+        car_near_index = find_nearest_index((car.x, car.y), smooth_points)
+        target = points[next_waypoint_index]
+        obs = ai_values(car_near_index, target)
+        outputs = net.activate(obs)
+        move_state = translator(outputs)
+
+        car.move(move_state, dt)
+        net_speed += car.speed
+        frame_count += 1
+        frame_since_waypoint += 1
+
+        if not car_is_on_track(car, smooth_points, car_near_index):
+            crashed = True
+            can_move = False
+            car.vx = 0
+            car.vy = 0
+
+        if math.hypot(car.x - target[0], car.y - target[1]) < WAYPOINT_RADIUS:
+            last_waypoint_index = next_waypoint_index
+            next_waypoint_index = (next_waypoint_index + 1) % len(points)
+            frame_since_waypoint = 0
+            if next_waypoint_index == 0:
+                laps_completed += 1
+        stalled = frame_since_waypoint >= STALL
+
+        if RENDER:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+            cam_x, cam_y = get_camera_offset(car.x, car.y)
+            draw()
+            car.draw(screen, cam_x, cam_y)
+            pygame.display.flip()
+            pygame.event.pump()
+            clock.tick(60)
+
+        if DEBUG and (frame % DEBUG_EVERY == 0):
+            so_far = laps_completed * len(points) + next_waypoint_index
+            print(f"  #{genome_id} f={frame:4d} x={car.x:8.1f} y={car.y:8.1f} "
+                  f"spd={car.speed:6.1f} wp={next_waypoint_index:2d} lap={laps_completed} "
+                  f"dist2wp={math.hypot(target[0]-car.x, target[1]-car.y):7.1f}")
+
+        frame += 1
+        if crashed or stalled or frame > MAX_FRAMES:
+            break
+
+    progress = laps_completed * len(points) + next_waypoint_index
+    avg_speed = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
+    if DEBUG:
+        print(f"  #{genome_id} DONE crashed={crashed} stalled={stalled} "
+              f"fitness={progress + avg_speed * 0.5:.2f}")
+    return progress + avg_speed * 0.5
+
+def eval_genomes(genomes, config):
+    for genome_id, genome in genomes:
+        genome.fitness = eval_one_genome(genome_id, genome, config)
+
+# ===== TRAIN (runs before the game loop) =====
+config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                     neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                     "config-feedforward.txt")
+pop = neat.Population(config)
+pop.add_reporter(neat.StdOutReporter(True))
+pop.add_reporter(neat.StatisticsReporter())
+pop.run(eval_genomes, 10)          # 10 generations for the first test (bump to 30 later)
 
 while True:
     for event in pygame.event.get():
@@ -511,9 +622,8 @@ while True:
             avg_speed_normalized = (net_speed / frame_count) / car.max_speed if frame_count > 0 else 0
             episode_fitness = progress + avg_speed_normalized * 0.5   #f
             print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
-
     progress = laps_completed * len(points) + next_waypoint_index
-    ai_values(car_near_index)
+    aivals = ai_values(car_near_index, target)
     speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
     progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
     screen.blit(speed_text, (10, 10))
