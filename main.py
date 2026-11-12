@@ -2,12 +2,13 @@ import pygame
 import sys
 import math
 import random
-import pickle         
-import argparse        
+import pickle
+import argparse
 import neat
 from neat.nn import FeedForwardNetwork
+import nn_viz
 
-random.seed(19)        
+random.seed(19)
 
 pygame.init()
 
@@ -41,16 +42,14 @@ pygame.init()
     Treat turning and throttle as two separate argmax/binary decisions (one output group for {left, right, none}, another for {accel, brake, none}) — lets you combine them
 '''
 
-# vars
 TRACK_WIDTH = 130
 TRACK_RADIUS = TRACK_WIDTH // 2
-TRACK_COLOR = (100, 100, 100)
-CHECKPOINT_COLOR = (255, 220, 0)
+TRACK_COLOR = (72, 72, 78)          # darker asphalt grey, reads better against grass
+CHECKPOINT_COLOR = (255, 220, 0)    # kept for backwards-compat, checkered line used for drawing now
 next_waypoint_index = 1
 laps_completed = 0
 WAYPOINT_RADIUS = TRACK_RADIUS
 
-current_speed = 0
 last_waypoint_index = 0
 
 WORLD_WIDTH, WORLD_HEIGHT = 2400, 1200
@@ -58,6 +57,13 @@ ZOOM = 1.5
 RAY_ANGLES = [-90, -45, 0, 45, 90, 180]
 MAX_RAY_DIST = 400
 NEAR_WINDOW = 20  # how many centerline segments either side of the car's nearest point to check
+
+# Names for each slot of the observation vector / output vector, in the exact
+# order ai_values()/translator() use them. Fed into the NN viz panel so each
+# neuron gets a readable label instead of just a coloured dot.
+INPUT_LABELS = [f"Ray {a}°" for a in RAY_ANGLES] + ["Angle→WP", "Speed", "Dist→WP"]
+OUTPUT_LABELS = ["Left", "Straight", "Right", "Accel", "Coast", "Brake"]
+
 car_near_index = 0
 net_speed = 0
 frame_count = 0
@@ -67,23 +73,36 @@ episode_fitness = None
 can_move = True
 episode_over = False
 crashed = False
-MAX_FRAMES = 12000     
+MAX_FRAMES = 12000
 RENDER = False
-DEBUG = False          
+DEBUG = False
 DEBUG_EVERY = 30  # print every N frames
 
-screen = pygame.display.set_mode((720, 580))
-screen_width, screen_height = screen.get_size()
-view_width = int(screen_width / ZOOM)
-view_height = int(screen_height / ZOOM)
+FULLSCREEN = False
+WINDOWED_SIZE = (1200, 800)
 
+def set_display_mode(fullscreen):
+    global screen, screen_width, screen_height, view_width, view_height, FULLSCREEN
+    FULLSCREEN = fullscreen
+    if fullscreen:
+        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)  # (0,0) = use native desktop res
+    else:
+        screen = pygame.display.set_mode(WINDOWED_SIZE)
+    screen_width, screen_height = screen.get_size()
+    view_width = int(screen_width / ZOOM)
+    view_height = int(screen_height / ZOOM)
+
+set_display_mode(False)
 pygame.display.set_caption("Car Racing")
 
 WHITE = (255, 255, 255)
-RED = (255, 0, 0)
+RED = (255, 0, 0)              # champion / default car colour
+PLAYER_BLUE = (40, 110, 240)   # player's car + HUD label colour
+GRASS_GREEN = (56, 142, 60)
+LANE_WHITE = (235, 235, 235)
 clock = pygame.time.Clock()
 
-# Cam
+
 def get_camera_offset(target_x, target_y):
     cam_x = target_x - view_width // 2
     cam_y = target_y - view_height // 2
@@ -95,10 +114,8 @@ def get_camera_offset(target_x, target_y):
 def world_to_screen(point, cam_x, cam_y):
     x, y = point
     return (int((x - cam_x) * ZOOM), int((y - cam_y) * ZOOM))
-
-# Car Class
 class Car:
-    def __init__(self, x, y):
+    def __init__(self, x, y, color=None):
         # Just plain old constants
         self.max_speed = 500
         self.accel = 3
@@ -114,6 +131,7 @@ class Car:
         self.vx = 0
         self.vy = 0
         self.grip = 0.07
+        self.color = color if color is not None else RED  # lets replay tell cars apart
 
     @property
     def speed(self):
@@ -149,7 +167,7 @@ class Car:
             (int(self.width * ZOOM), int(self.height * ZOOM)),
             pygame.SRCALPHA
         )
-        car_surf.fill(RED)
+        car_surf.fill(self.color)
 
         # Rotate it
         rotated = pygame.transform.rotate(car_surf, -math.degrees(self.angle))
@@ -219,7 +237,6 @@ class Car:
             self.y += self.vy * dt
 
 font = pygame.font.SysFont(None, 24)  # For looking at speed + Progress
-
 def generate_points(center, radius_x, radius_y, number, variability):
     cx, cy = center
     points = []
@@ -322,7 +339,6 @@ def car_is_on_track(car, centerline, near_index=None):
         if not point_is_on_track(point, centerline, near_index):
             return False
     return True
-
 def cast_ray(car, angle_offset_deg, centerline, near_index, max_dist=MAX_RAY_DIST, step=10):
     angle = car.angle + math.radians(angle_offset_deg)
     dx = math.cos(angle)
@@ -352,53 +368,78 @@ start_angle = math.atan2(next_point[1] - start_point[1], next_point[0] - start_p
 car = Car(start_point[0], start_point[1])
 car.angle = start_angle
 checkpoint_angle = start_angle + math.pi / 2
+def draw_track(surface, cam_x, cam_y, waypoint_index):
+    surface.fill(GRASS_GREEN)
 
-def draw():
-    screen.fill(WHITE)
-
-    # Convert the track points to camera coordinates
     screen_points = [world_to_screen(point, cam_x, cam_y) for point in smooth_points]
 
-    # Draw the track
-    pygame.draw.lines(screen, TRACK_COLOR, True, screen_points, int(TRACK_WIDTH * ZOOM))
-
-    # Round the track joins
+    # Road surface + rounded joins
+    pygame.draw.lines(surface, TRACK_COLOR, True, screen_points, int(TRACK_WIDTH * ZOOM))
     for point in screen_points:
-        pygame.draw.circle(screen, TRACK_COLOR, point, int(TRACK_RADIUS * ZOOM))
+        pygame.draw.circle(surface, TRACK_COLOR, point, int(TRACK_RADIUS * ZOOM))
 
-    pygame.draw.circle(
-        screen, (0, 0, 255),
-        world_to_screen(points[next_waypoint_index], cam_x, cam_y),
-        int(10 * ZOOM)
-    )
+    # Dashed centerline, purely cosmetic
+    for i in range(0, len(screen_points), 4):
+        pygame.draw.circle(surface, LANE_WHITE, screen_points[i], max(2, int(3 * ZOOM)))
 
-    # Draw initialization checkpoint
-    checkpoint_x = math.cos(checkpoint_angle) * TRACK_RADIUS
-    checkpoint_y = math.sin(checkpoint_angle) * TRACK_RADIUS
-    checkpoint_start = (start_point[0] - checkpoint_x, start_point[1] - checkpoint_y)
-    checkpoint_end = (start_point[0] + checkpoint_x, start_point[1] + checkpoint_y)
+    # Next waypoint marker
+    pygame.draw.circle(surface, (0, 0, 255),
+                       world_to_screen(points[waypoint_index], cam_x, cam_y), int(10 * ZOOM))
 
-    pygame.draw.line(
-        screen,
-        CHECKPOINT_COLOR,
-        world_to_screen(checkpoint_start, cam_x, cam_y),
-        world_to_screen(checkpoint_end, cam_x, cam_y),
-        max(2, int(5 * ZOOM))
-    )
+    draw_start_line(surface, cam_x, cam_y)
 
-def ai_values(near_index, targets):
-    readings = get_raycast(car, smooth_points, near_index)
+def draw_start_line(surface, cam_x, cam_y, squares=6):
+    # Checkered start/finish flag instead of a single yellow bar
+    cp_x = math.cos(checkpoint_angle) * TRACK_RADIUS
+    cp_y = math.sin(checkpoint_angle) * TRACK_RADIUS
+    seg_a = (start_point[0] - cp_x, start_point[1] - cp_y)
+    seg_b = (start_point[0] + cp_x, start_point[1] + cp_y)
 
-    x_var = car.x
-    y_var = car.y
-    angle = math.atan2(targets[1] - y_var, targets[0] - x_var) - car.angle
-    angle = (angle + math.pi) % (2 * math.pi) - math.pi #Wrapping it to range of -pi to pi
+    for i in range(squares):
+        t0, t1 = i / squares, (i + 1) / squares
+        p0 = (seg_a[0] + (seg_b[0] - seg_a[0]) * t0, seg_a[1] + (seg_b[1] - seg_a[1]) * t0)
+        p1 = (seg_a[0] + (seg_b[0] - seg_a[0]) * t1, seg_a[1] + (seg_b[1] - seg_a[1]) * t1)
+        color = WHITE if i % 2 == 0 else (30, 30, 30)
+        pygame.draw.line(surface, color, world_to_screen(p0, cam_x, cam_y),
+                         world_to_screen(p1, cam_x, cam_y), max(3, int(6 * ZOOM)))
+
+def draw_hud_panel(surface, x, y, w, h, alpha=150):
+    # A translucent rounded box to put HUD text on, so it stays readable over any track colour
+    panel = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(panel, (0, 0, 0, alpha), panel.get_rect(), border_radius=12)
+    surface.blit(panel, (x, y))
+
+def render_text_outline(font_obj, text, color, outline_color=(0, 0, 0), px=3):
+    # Crude outlined text (render the text N times offset in black, then once on top)
+    base = font_obj.render(text, True, color)
+    outline = font_obj.render(text, True, outline_color)
+    surf = pygame.Surface((base.get_width() + px * 2, base.get_height() + px * 2), pygame.SRCALPHA)
+    for dx in (-px, 0, px):
+        for dy in (-px, 0, px):
+            if dx or dy:
+                surf.blit(outline, (dx + px, dy + px))
+    surf.blit(base, (px, px))
+    return surf
+
+def draw():
+    draw_track(screen, cam_x, cam_y, next_waypoint_index)
+
+def ai_values(near_index, targets, car_obj=None):
+    if car_obj is None:
+        car_obj = car  # default keeps training / single-player code unchanged
+
+    readings = get_raycast(car_obj, smooth_points, near_index)
+
+    x_var = car_obj.x
+    y_var = car_obj.y
+    angle = math.atan2(targets[1] - y_var, targets[0] - x_var) - car_obj.angle
+    angle = (angle + math.pi) % (2 * math.pi) - math.pi  # Wrapping it to range of -pi to pi
     angle = angle / math.pi
     angle = round(angle, 2)
 
-    speed = round(round(car.speed) / (car.max_speed + 3), 3)
+    speed = round(round(car_obj.speed) / (car_obj.max_speed + 3), 3)
 
-    dist = round(math.hypot(targets[0] - car.x, targets[1] - car.y) / 250, 3)
+    dist = round(math.hypot(targets[0] - car_obj.x, targets[1] - car_obj.y) / 250, 3)
     dist = max(0, min(dist, 1))
 
     readings.extend([angle, speed, dist])
@@ -436,13 +477,13 @@ def translator(neat_output):
     move_state = {
         "left":  steer_choice == 0,
         "right": steer_choice == 2,
-        "accel": throttle_choice == 3,   # FIXED: was == 0 (could never be true)
-        "brake": throttle_choice == 5,   # FIXED: was == 2 (could never be true)
+        "accel": throttle_choice == 3,
+        "brake": throttle_choice == 5,
     }
     return move_state
 
 def eval_one_genome(genome_id, genome, config):
-    
+
     global car_near_index, net_speed, frame_count, frame_since_waypoint
     global crashed, can_move, last_waypoint_index, next_waypoint_index
     global laps_completed, cam_x, cam_y
@@ -494,7 +535,6 @@ def eval_one_genome(genome_id, genome, config):
             clock.tick(60)
 
         if DEBUG and (frame % DEBUG_EVERY == 0):
-            so_far = laps_completed * len(points) + next_waypoint_index
             print(f"  #{genome_id} f={frame:4d} x={car.x:8.1f} y={car.y:8.1f} "
                   f"spd={car.speed:6.1f} wp={next_waypoint_index:2d} lap={laps_completed} "
                   f"dist2wp={math.hypot(target[0]-car.x, target[1]-car.y):7.1f}")
@@ -554,7 +594,7 @@ def train():
     pop.add_reporter(neat.StatisticsReporter())
     pop.add_reporter(neat.Checkpointer(generation_interval=2, filename_prefix="neat-checkpoint-"))
     pop.add_reporter(BestSaver("best_genome.pkl"))
-    pop.run(eval_genomes, 20)  
+    pop.run(eval_genomes, 20)
 
 def replay_champion(path="best_genome.pkl"):
     global RENDER, DEBUG, points, smooth_points, start_point, next_point, start_angle
@@ -562,14 +602,14 @@ def replay_champion(path="best_genome.pkl"):
     with open(path, "rb") as f:
         data = pickle.load(f)
 
-    if isinstance(data, dict):                      # new format
+    if isinstance(data, dict):
         genome = data["genome"]
         saved_track = data.get("track")
-    else:                                           # fallback: raw genome
+    else:
         genome = data
         saved_track = None
 
-    if saved_track is not None:                     # replay on the SAME track it trained on
+    if saved_track is not None:
         points = saved_track
         smooth_points = smooth_lines(points, samples=20)
         start_point = points[0]
@@ -579,9 +619,168 @@ def replay_champion(path="best_genome.pkl"):
 
     RENDER = True
     DEBUG = False
+
+    cfg = load_config()
+    net = FeedForwardNetwork.create(genome, cfg)
+
+    def apply_replay_view():
+        # Track fills the left 2/3 of the window, NN panel the right 1/3.
+        # The camera's visible world size comes from the track area only, so
+        # world units map 1:1 to on-screen pixels (no stretching).
+        global view_width, view_height
+        panel_w = screen_width // 3
+        view_width = int((screen_width - panel_w) / ZOOM)
+        view_height = int(screen_height / ZOOM)
+        return panel_w
+
+    def build_viz(panel_w):
+        # Rebuilt whenever the window size changes (e.g. F11 fullscreen toggle)
+        # so the NN panel always matches the current viewport exactly.
+        return nn_viz.compute_layout(genome, cfg, panel_w=panel_w, panel_h=screen_height,
+                                     input_labels=INPUT_LABELS, output_labels=OUTPUT_LABELS)
+
+    panel_w = apply_replay_view()
+    viz = build_viz(panel_w)
+
     print(f"Replaying {path} | fitness={genome.fitness:.2f} | size={genome.size()} | ESC/close to exit")
-    fit = eval_one_genome(genome.key, genome, load_config())
-    print(f"Replay complete | fitness={fit:.2f}")
+    print("Controls: WASD drive | R reset to checkpoint | F11 fullscreen | ESC quit")
+
+    player_laps = 0
+    champ_laps = 0
+    player_wp = 1
+    champ_wp = 1
+    player_last_wp = 0     # last waypoint the player actually reached, for the R-key reset
+    player_crashed = False
+    champ_crashed = False
+
+    player_car = Car(start_point[0], start_point[1], color=PLAYER_BLUE)
+    player_car.angle = start_angle
+
+    # offset the champ car sideways relative to the track direction, not
+    # just along world-x (old code: start_point[0] + 30), so it reliably
+    # spawns next to the player regardless of track orientation
+    side_x = -math.sin(start_angle) * 25
+    side_y = math.cos(start_angle) * 25
+    champ_car = Car(start_point[0] + side_x, start_point[1] + side_y, color=RED)
+    champ_car.angle = start_angle
+
+    dt = 1 / 60
+    clock = pygame.time.Clock()
+    big_font = pygame.font.SysFont(None, 160)
+    lap_font = pygame.font.SysFont(None, 30)
+    hint_font = pygame.font.SysFont(None, 22)
+
+    COUNTDOWN_SECS = 3
+    countdown_start = pygame.time.get_ticks()
+    racing = False
+    running = True
+    champ_vals = {}  # neuron activations for the NN panel; filled once racing starts
+
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_F11:
+                    set_display_mode(not FULLSCREEN)
+                    panel_w = apply_replay_view()
+                    viz = build_viz(panel_w)
+                elif event.key == pygame.K_r:
+                    # Reset ONLY the player's car back to the last waypoint they reached.
+                    # The champ car / champ progress / lap counts are untouched.
+                    wp_point = points[player_last_wp]
+                    next_pt = points[(player_last_wp + 1) % len(points)]
+                    player_car.x, player_car.y = wp_point
+                    player_car.angle = math.atan2(next_pt[1] - wp_point[1], next_pt[0] - wp_point[0])
+                    player_car.vx = player_car.vy = 0
+                    player_crashed = False
+
+        elapsed = (pygame.time.get_ticks() - countdown_start) / 1000.0
+        if not racing and elapsed >= COUNTDOWN_SECS:
+            racing = True
+
+        if racing:
+            if not champ_crashed:
+                champ_near = find_nearest_index((champ_car.x, champ_car.y), smooth_points)
+                champ_target = points[champ_wp]
+                champ_obs = ai_values(champ_near, champ_target, champ_car)
+                champ_vals = nn_viz.get_activations(net, champ_obs)
+                champ_out = [champ_vals[o] for o in net.output_nodes]
+
+                champ_move = translator(champ_out)
+                champ_car.move(champ_move, dt)
+
+                if not car_is_on_track(champ_car, smooth_points, champ_near):
+                    champ_crashed = True
+                    champ_car.vx = 0
+                    champ_car.vy = 0
+                elif math.hypot(champ_car.x - champ_target[0], champ_car.y - champ_target[1]) < WAYPOINT_RADIUS:
+                    champ_wp = (champ_wp + 1) % len(points)
+                    if champ_wp == 0:
+                        champ_laps += 1
+
+            if not player_crashed:
+                keys = pygame.key.get_pressed()
+                player_move = {
+                    "left":  keys[pygame.K_a],
+                    "right": keys[pygame.K_d],
+                    "accel": keys[pygame.K_w],
+                    "brake": keys[pygame.K_s],
+                }
+                player_near = find_nearest_index((player_car.x, player_car.y), smooth_points)
+                player_target = points[player_wp]
+                player_car.move(player_move, dt)
+
+                if not car_is_on_track(player_car, smooth_points, player_near):
+                    player_crashed = True
+                    player_car.vx = 0
+                    player_car.vy = 0
+                elif math.hypot(player_car.x - player_target[0], player_car.y - player_target[1]) < WAYPOINT_RADIUS:
+                    player_last_wp = player_wp
+                    player_wp = (player_wp + 1) % len(points)
+                    if player_wp == 0:
+                        player_laps += 1
+
+        cam_x, cam_y = get_camera_offset(player_car.x, player_car.y)
+
+        world_surf = pygame.Surface((screen_width, screen_height))
+
+        draw_track(world_surf, cam_x, cam_y, player_wp)
+        player_car.draw(world_surf, cam_x, cam_y)
+        champ_car.draw(world_surf, cam_x, cam_y)
+
+        # HUD: translucent rounded box + colour-matched labels (blue = player, red = champ)
+        draw_hud_panel(world_surf, 10, 10, 240, 120)
+        world_surf.blit(lap_font.render(
+            f"Player: {player_laps}/3" + (" (crashed)" if player_crashed else ""), True, PLAYER_BLUE), (22, 18))
+        world_surf.blit(lap_font.render(f"Speed: {player_car.speed:4.0f}", True, PLAYER_BLUE), (22, 48))
+        world_surf.blit(lap_font.render(
+            f"Champ: {champ_laps}/3" + (" (crashed)" if champ_crashed else ""), True, RED), (22, 78))
+        world_surf.blit(lap_font.render(f"Speed: {champ_car.speed:4.0f}", True, RED), (22, 108))
+
+        hint = hint_font.render("WASD drive   R reset   F11 fullscreen   ESC quit", True, (255, 255, 255))
+        world_surf.blit(hint, (12, screen_height - 26))
+
+        if not racing:
+            remaining = max(0, COUNTDOWN_SECS - elapsed)
+            label = "GO!" if remaining <= 0.001 else str(int(remaining) + 1)
+            cd_surf = render_text_outline(big_font, label, (255, 215, 0))
+            cd_rect = cd_surf.get_rect(center=(screen_width // 2, screen_height // 2))
+            world_surf.blit(cd_surf, cd_rect)
+
+        nn_viz.draw_network(world_surf, viz, champ_vals, pos=(screen_width - panel_w, 0))
+
+        screen.blit(world_surf, (0, 0))
+        pygame.display.flip()
+        clock.tick(60)
+
+        # End conditions
+        if racing and (player_laps >= 3 or champ_laps >= 3 or (player_crashed and champ_crashed)):
+            running = False
+
+    print(f"Race over — Player laps: {player_laps}, Champ laps: {champ_laps}")
     pygame.quit()
     sys.exit()
 
@@ -591,15 +790,20 @@ if __name__ == "__main__":
                     help="replay a saved champion with rendering (default: best_genome.pkl)")
     ap.add_argument("--debug", action="store_true",
                     help="print per-car telemetry during training (slow, noisy)")
+    ap.add_argument("--fullscreen", action="store_true",
+                    help="start in fullscreen mode (toggle anytime with F11)")
     args = ap.parse_args()
 
     DEBUG = args.debug
     RENDER = False
 
+    if args.fullscreen:
+        set_display_mode(True)
+
     if args.replay:
         replay_champion(args.replay)   # renders the champion, then exits
 
-    train()                           
+    train()
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -609,6 +813,8 @@ if __name__ == "__main__":
                 if event.key == pygame.K_ESCAPE:
                     pygame.quit()
                     sys.exit()
+                if event.key == pygame.K_F11:
+                    set_display_mode(not FULLSCREEN)
                 if event.key == pygame.K_r:
                     episode_over = False
                     can_move = True
@@ -655,8 +861,6 @@ if __name__ == "__main__":
             "brake": keys[pygame.K_s],
         }
 
-        previous_x = car.x
-        previous_y = car.y
         car.move(move_state, dt)              # update first
 
         net_speed += car.speed
@@ -698,9 +902,9 @@ if __name__ == "__main__":
                 print(f"Episode ended — crashed={crashed}, stalled={stalled}, fitness={episode_fitness:.3f}")
 
         progress = laps_completed * len(points) + next_waypoint_index
-        aivals = ai_values(car_near_index, target)
-        speed_text = font.render(f"Speed: {car.speed:.1f}", True, (0, 0, 0))
-        progress_text = font.render(f"Progress: {progress}", True, (0, 0, 0))
-        screen.blit(speed_text, (10, 10))
-        screen.blit(progress_text, (10, 30))
+        draw_hud_panel(screen, 10, 10, 220, 70)
+        speed_text = font.render(f"Speed: {car.speed:.1f}", True, WHITE)
+        progress_text = font.render(f"Progress: {progress}", True, WHITE)
+        screen.blit(speed_text, (22, 18))
+        screen.blit(progress_text, (22, 44))
         pygame.display.flip()
