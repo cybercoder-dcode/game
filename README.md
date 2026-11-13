@@ -15,6 +15,7 @@ A little bit of AI ie LLms was used for the ui and some fixes to show.
 
 #### How to Play? -
 - Clone the repository
+- Run the Command pip install -r requirements.txt
 - run the command -> "python main.py --replay --fullscreen" to play against the ai Realtime while viewing its decision in the neural network
 - To train the ai, just run python main.py --debug to view training live, Modify the Render var in code to TRUE to actually see the train in game (debug only does not render only prints telemetry)
 
